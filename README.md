@@ -1,2 +1,2 @@
 # Pipelines
-Contains the pipelines that i wrote.
+Contains the GitLab pipelines that i wrote.
