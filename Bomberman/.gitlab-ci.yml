@@ -1,0 +1,281 @@
+# The stages from this pipeline.
+stages:
+  - build
+  - check
+  - test
+  - deploy
+
+# The global variables of this pipeline.
+variables:
+  # The name and path of the backend image.
+  BACKEND_IMAGE: $CI_REGISTRY_IMAGE/backend:latest
+
+  # The name and path of the frontend image.
+  FRONTEND_IMAGE: $CI_REGISTRY_IMAGE/frontend:latest
+
+# A hidden job, that defines variables for the docker in docker jobs.
+.dind-variables:
+  variables:
+    # By default docker in docker uses the vfs storage driver, the overlay2 storage driver works faster.
+    DOCKER_DRIVER: "overlay2"
+
+    # Docker in docker needs tls for the connection to the docker deamon.
+    DOCKER_HOST: "tcp://docker:2376"
+
+    # Docker in docker needs certificates for the connection to the docker deamon.
+    DOCKER_TLS_CERTDIR: "/certs"
+
+# A hidden job, that defines a before script to login in our container registry.
+.login-before_script:
+  before_script:
+    - docker login
+      --username $CI_REGISTRY_USER
+      --password $CI_REGISTRY_PASSWORD
+      $CI_REGISTRY
+
+# A hidden job, that defines rules for all except the deploy job.
+.rules:
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'develop' || $CI_COMMIT_BRANCH == 'master'
+      changes:
+        - backend/**/*
+        - frontend/**/*
+        - shared/**/*
+
+# A hidden job, that defines rules for the deploy job.
+.deploy-rules:
+  rules:
+    - if: $CI_COMMIT_BRANCH == 'master'
+      when: manual
+
+#<----------BUILD---------->
+build:
+  stage: build
+
+  image: docker:19.03.11
+
+  services:
+    - docker:19.03.11-dind
+
+  tags:
+    - docker
+
+  extends:
+    - .dind-variables
+    - .login-before_script
+    - .rules
+
+  variables:
+    # This job needs the git repository.
+    GIT_STRATEGY: "clone"
+
+  script:
+    # Pull the latest images and use them as cache.
+    - docker pull $FRONTEND_IMAGE || true
+    - docker pull $BACKEND_IMAGE || true
+
+    # Build the frontend image.
+    - docker build
+      --cache-from $FRONTEND_IMAGE
+      --tag $FRONTEND_IMAGE
+      --file frontend/Dockerfile
+      ./
+
+    # Build the backend image.
+    - docker build
+      --build-arg FRONTEND_IMAGE=$FRONTEND_IMAGE
+      --cache-from $BACKEND_IMAGE
+      --tag $BACKEND_IMAGE
+      --file backend/Dockerfile
+      ./
+
+    # Push the images to the container registry.
+    - docker push $FRONTEND_IMAGE
+    - docker push $BACKEND_IMAGE
+
+#<----------CHECK-BACKEND---------->
+check:backend:
+  stage: check
+
+  image: $BACKEND_IMAGE
+
+  tags:
+    - docker
+
+  extends:
+    - .rules
+
+  variables:
+    # The gitlab runner does not need the git repository for this job.
+    GIT_STRATEGY: none
+
+  script:
+    - cd /usr/src/backend
+    - npm run lint
+
+#<----------CHECK-FRONTEND---------->
+check:frontend:
+  stage: check
+
+  image: $FRONTEND_IMAGE
+
+  tags:
+    - docker
+
+  extends:
+    - .rules
+
+  variables:
+    # The gitlab runner does not need the git repository for this job.
+    GIT_STRATEGY: none
+
+  script:
+    - cd /usr/src/frontend
+    - npm run lint
+
+#<----------TEST-BACKEND---------->
+test:backend:
+  stage: test
+
+  image: $BACKEND_IMAGE
+
+  services:
+    - name: mysql:5.7
+      alias: mysql
+
+  tags:
+    - docker
+
+  extends:
+    - .rules
+
+  variables:
+    # The gitlab runner does not need the git repository for this job.
+    GIT_STRATEGY: none
+
+    # The test database settings for the backend image.
+    DATABASE_HOST: "mysql"
+    DATABASE_PORT: 3306
+    TEST_DATABASE_NAME: "$TEST_DATABASE_NAME"
+    TEST_DATABASE_USER: "$TEST_DATABASE_USER"
+    TEST_DATABASE_PASSWORD: "$TEST_DATABASE_PASSWORD"
+
+    # The test database settings for the service image.
+    MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    MYSQL_DATABASE: "$TEST_DATABASE_NAME"
+    MYSQL_USER: "$TEST_DATABASE_USER"
+    MYSQL_PASSWORD: "$TEST_DATABASE_PASSWORD"
+
+    # The secrets for the test.
+    JWT_SECRET: "$TEST_JWT_SECRET"
+    GAME_KEY: "$TEST_GAME_KEY"
+
+  script:
+    - cd /usr/src/backend
+    - npm run test:pipeline
+
+# #<----------TEST-FRONTEND---------->
+.test:frontend:
+  stage: test
+
+  image: $FRONTEND_IMAGE
+
+  tags:
+    - docker
+
+  extends:
+    - .rules
+
+  variables:
+    # The gitlab runner does not need the git repository for this job.
+    GIT_STRATEGY: none
+
+  script:
+    - cd /usr/src/frontend
+    - npm run test
+
+#<----------DEPLOY---------->
+deploy:
+  stage: deploy
+
+  tags:
+    - shell
+
+  extends:
+    - .login-before_script
+    - .deploy-rules
+
+  variables:
+    # The gitlab runner need the git repository for this job.
+    GIT_STRATEGY: "clone"
+
+    # The path on the server to store all deployed files.
+    DEPLOY_PATH: "/home/bomberman"
+
+    # The port on the server to run the backend.
+    BACKEND_PORT: 8010
+
+    # The database settings for the production environment.
+    DATABASE_HOST: "database"
+    DATABASE_PORT: 3306
+    MAIN_DATABASE_NAME: "$PRODUCTION_DATABASE_NAME"
+    MAIN_DATABASE_USER: "$PRODUCTION_DATABASE_USER"
+
+    # The paths where the key files are stored.
+    SECRET_HOST_PATH: "./key/"
+    SECRET_CONTAINER_PATH: "/run/secrets/"
+
+    # The name of the key files.
+    MAIN_DATABASE_KEY_FILE: "database.key"
+    JWT_KEY_FILE: "jwt.key"
+    GAME_KEY_FILE: "game.key"
+
+  script:
+    # If not exist create the deploy path on the server.
+    - mkdir -p $DEPLOY_PATH || true
+
+    # Copy the production docker compose on the server.
+    - cp --force docker-compose.production.yml $DEPLOY_PATH/docker-compose.yml
+
+    # Change in the deploy directory for the following commands.
+    - cd $DEPLOY_PATH
+
+    # Create the key file directory.
+    - mkdir -p $SECRET_HOST_PATH
+
+    # Change permissions of the key directory.
+    - chmod 700 $SECRET_HOST_PATH
+
+    # Copy the keys in a key file in the key file directory.
+    - printf $PRODUCTION_DATABASE_KEY > $SECRET_HOST_PATH/$MAIN_DATABASE_KEY_FILE
+    - printf $PRODUCTION_JWT_KEY > $SECRET_HOST_PATH/$JWT_KEY_FILE
+    - printf $PRODUCTION_GAME_KEY > $SECRET_HOST_PATH/$GAME_KEY_FILE
+
+    # Change permissions of the key files.
+    - chmod 600 $SECRET_HOST_PATH/*
+
+    # Create the environment file.
+    - rm .env
+    - touch .env
+
+    # Copy all needed environment variables in the .env file.
+    - echo "BACKEND_IMAGE=$BACKEND_IMAGE" >> .env
+    - echo "BACKEND_PORT=$BACKEND_PORT" >> .env
+    - echo "DATABASE_HOST=$DATABASE_HOST" >> .env
+    - echo "DATABASE_PORT=$DATABASE_PORT" >> .env
+    - echo "MAIN_DATABASE_NAME=$MAIN_DATABASE_NAME" >> .env
+    - echo "MAIN_DATABASE_USER=$MAIN_DATABASE_USER" >> .env
+    - echo "SECRET_HOST_PATH=$SECRET_HOST_PATH" >> .env
+    - echo "SECRET_CONTAINER_PATH=$SECRET_CONTAINER_PATH" >> .env
+    - echo "MAIN_DATABASE_KEY_FILE=$MAIN_DATABASE_KEY_FILE" >> .env
+    - echo "JWT_KEY_FILE=$JWT_KEY_FILE" >> .env
+    - echo "GAME_KEY_FILE=$GAME_KEY_FILE" >> .env
+
+    # Stop the old container and remove the old image.
+    - docker-compose down --rmi all
+
+    # Pull the new image.
+    - docker pull $BACKEND_IMAGE
+
+    # Start the new container.
+    - docker-compose up -d

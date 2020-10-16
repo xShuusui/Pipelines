@@ -1,0 +1,145 @@
+#==================================================
+# INFO:
+# This file holds hidden jobs, that we include
+# in the '.gitlab-ci.yml' file. The hidden jobs
+# contain variables, rules and before scripts
+# for other jobs.
+#
+# Author: Julian Segeth
+#==================================================
+
+# A hidden job that define rules for the datenbereitstellungs jobs.
+.t1-rules:
+    rules:
+        # Runs when it is merged to master.
+        - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'master'
+
+        # Runs when it is merged or pushed to develop and there are changes in the datenbereitstellungs directory.
+        - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'develop' || $CI_COMMIT_BRANCH == 'develop'
+          changes:
+              - datenbereitstellung/**/*
+
+        - if: $CI_COMMIT_BRANCH == 'Segeth_Pipeline'
+          changes:
+              - datenbereitstellung/**/*
+
+# A hidden job that define rules for the datenvisualisierungs jobs.
+.t2-rules:
+    rules:
+        # Runs when it is merged to master.
+        - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'master'
+
+        # Runs when it is merged or pushed to develop and there are changes in the datenvisualisierungs directory.
+        - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'develop' || $CI_COMMIT_BRANCH == 'develop'
+          changes:
+              - datenvisualisierung/**/*
+
+        - if: $CI_COMMIT_BRANCH == 'Segeth_Pipeline'
+          changes:
+              - datenvisualisierung/**/*
+
+# A hidden job that define rules for the weboberflaeche jobs.
+.t3-rules:
+    rules:
+        # Runs when it is merged to master.
+        - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'master'
+
+        # Runs when it is merged or pushed to develop and there are changes in the weboberflaeche directory.
+        - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'develop' || $CI_COMMIT_BRANCH == 'develop'
+          changes:
+              - weboberflaeche/**/*
+
+        - if: $CI_COMMIT_BRANCH == 'Segeth_Pipeline'
+          changes:
+              - weboberflaeche/**/*
+              
+# A hidden job that define rules for the deploy jobs.
+.deploy-rules:
+    rules:
+        # Runs when it is merged to develop or master.
+        - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'develop' || $CI_COMMIT_BRANCH == 'develop' || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == 'master'
+          when: manual
+
+        - if: $CI_COMMIT_BRANCH == 'Segeth_Pipeline'
+          when: manual
+
+# A hidden job that defines variables for the build jobs.
+.build-variables:
+    variables:
+        # This job needs the git repository.
+        GIT_STRATEGY: 'clone'
+
+        # This job needs tls for the connection to the docker deamon.
+        DOCKER_HOST: 'tcp://docker:2376'
+
+        # This job needs certificates for the connection to the docker deamon.
+        DOCKER_TLS_CERTDIR: '/certs'
+
+# A hidden job that define variables for the test jobs.
+.test-variables:
+    variables:
+        # This job doesnt need the git repository.
+        GIT_STRATEGY: 'none'
+
+        # This job needs the standard connection to the docker deamon.
+        DOCKER_HOST: 'tcp://docker:2375'
+
+        # This job doesnt need certificates for the connection to the docker deamon.
+        DOCKER_TLS_CERTDIR: ''
+
+        # The service healtcheck must know on which port is the connection to the docker deamon.
+        SERVICE_PORT_2376_TCP_PORT: 2375
+
+        # The path where maven create the locale repository for the dependencies.
+        MAVEN_OPTS: '-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository'
+
+# A hidden job that define variables for the deploy jobs.
+.deploy-variables:
+    variables:
+        # This job needs the git repository.
+        GIT_STRATEGY: 'clone'
+
+        # The deploy path on the server.
+        DEPLOY_PATH: '/home/fwadmin/flugwege'
+
+        # The user of the server on which we want to deploy.
+        DEPLOY_USER: 'fwadmin'
+
+        # The address of the server on which we want to deploy.
+        DEPLOY_SERVER: '5.189.185.190'
+
+# A hidden job that defines the before script to login into the container registry.
+.login-before-script:
+    before_script:
+        # Login to the container registry.
+        - docker login
+          --username $CI_REGISTRY_USER
+          --password $CI_REGISTRY_PASSWORD
+          $CI_REGISTRY
+
+# A hidden job that defines the before script to create a ssh connection.
+.ssh-before-script:
+    before_script:
+        # Install ssh-agent if it doesnt exist.
+        - which ssh-agent || (apt-get update -y && apt-get install openssh-client -y)
+
+        # Run the ssh-agent.
+        - eval $(ssh-agent -s)
+
+        # Add the private key to the ssh-agent.
+        - echo "$SSH_USER_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+
+        # Create the .ssh directory.
+        - mkdir -p ~/.ssh
+
+        # Change permissions of the .ssh directory.
+        - chmod 700 ~/.ssh
+
+        # Add the public key of the server to the known_hosts.
+        - echo "$SSH_SERVER_PUBLIC_KEY" >> ~/.ssh/known_hosts
+
+        # Change permissions of the known_host file.
+        - chmod 644 ~/.ssh/known_hosts
+
+        # If not exist, create the deploy directory.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "mkdir -p $DEPLOY_PATH"

@@ -1,0 +1,346 @@
+#==================================================
+# INFO:
+# We include a '.gitlab-ci.definitions.yml' in this
+# file. There we define hidden jobs with
+# variables, rules and before scripts that
+# can be used in any job of this file.
+#
+# IMPORTANT:
+# We need variables in this file, that must be
+# defined in our repository:
+# - SSH_USER_PRIVATE_KEY
+# - SSH_SERVER_PUBLIC_KEY
+#
+# This pipeline uses docker in docker with tls
+# in the build jobs. To do this, you need to
+# configure the gitlab-runner with:
+# - privileged = true
+# - volumes = ['/certs/client', '/cache']
+#
+# Author: Julian Segeth
+#==================================================
+
+# Include a local file with hidden jobs.
+include: '.gitlab-ci.definitions.yml'
+
+# The stages from this pipeline.
+stages:
+    - build
+    - test
+    - deploy
+
+# The global variables of this pipeline.
+variables:
+    # By default docker in docker uses the vfs storage driver, the overlay2 storage driver works faster.
+    DOCKER_DRIVER: 'overlay2'
+
+    # The default image for docker in docker.
+    DOCKER_IMAGE: 'docker:19.03.11'
+
+    # The default service image for docker in docker.
+    DOCKER_SERVICE: 'docker:19.03.11-dind'
+
+    # The name and path of the datenbereitstellungs build image.
+    T1_BUILD_IMAGE: '$CI_REGISTRY_IMAGE/datenbereitstellung-build:latest'
+
+    # The name and path of the datenbereitstellungs deploy image.
+    T1_DEPLOY_IMAGE: '$CI_REGISTRY_IMAGE/datenbereitstellung-deploy:latest'
+
+    # The name and path of the datenvisualisierungs build image.
+    T2_BUILD_IMAGE: '$CI_REGISTRY_IMAGE/datenvisualisierung-build:latest'
+
+    # The name and path of the datenvisualisierungs deploy image.
+    T2_DEPLOY_IMAGE: '$CI_REGISTRY_IMAGE/datenvisualisierung-deploy:latest'
+
+    # The name and path of the weboberflaeches build image.
+    T3_BUILD_IMAGE: '$CI_REGISTRY_IMAGE/weboberflaeche-build:latest'
+
+    # The name and path of the weboberflaeches deploy image.
+    T3_DEPLOY_IMAGE: '$CI_REGISTRY_IMAGE/weboberflaeche-deploy:latest'
+
+T1-Build:
+    stage: build
+
+    image: $DOCKER_IMAGE
+
+    services:
+        - $DOCKER_SERVICE
+
+    extends:
+        - .build-variables
+        - .t1-rules
+        - .login-before-script
+
+    script:
+        # Pull the datenbereitstellungs images and use them as cache.
+        - docker pull $T1_BUILD_IMAGE || true
+        - docker pull $T1_DEPLOY_IMAGE || true
+
+        # Build the datenbereitstellungs build image.
+        - docker build
+          --cache-from $T1_BUILD_IMAGE
+          --tag $T1_BUILD_IMAGE
+          --file datenbereitstellung/Dockerfile.build
+          ./datenbereitstellung
+
+        # Build the datenbereitstellungs deploy image.
+        - docker build
+          --build-arg BUILD_IMAGE=$T1_BUILD_IMAGE
+          --cache-from $T1_DEPLOY_IMAGE
+          --tag $T1_DEPLOY_IMAGE
+          --file datenbereitstellung/Dockerfile.deploy
+          ./datenbereitstellung
+
+        # Push the datenbereitstellungs images to the container registry.
+        - docker push $T1_BUILD_IMAGE
+        - docker push $T1_DEPLOY_IMAGE
+
+T2-Build:
+    stage: build
+
+    image: $DOCKER_IMAGE
+
+    services:
+        - $DOCKER_SERVICE
+
+    extends:
+        - .build-variables
+        - .t2-rules
+        - .login-before-script
+
+    script:
+        # Pull the datenvisualisierungs images and use them as cache.
+        - docker pull $T2_BUILD_IMAGE || true
+        - docker pull $T2_DEPLOY_IMAGE || true
+
+        # Build the datenvisualisierungs build image.
+        - docker build
+          --cache-from $T2_BUILD_IMAGE
+          --tag $T2_BUILD_IMAGE
+          --file datenvisualisierung/Dockerfile.build
+          ./datenvisualisierung
+
+        # Build the datenvisualisierungs deploy image.
+        - docker build
+          --build-arg BUILD_IMAGE=$T2_BUILD_IMAGE
+          --cache-from $T2_DEPLOY_IMAGE
+          --tag $T2_DEPLOY_IMAGE
+          --file datenvisualisierung/Dockerfile.deploy
+          ./datenvisualisierung
+
+        # Push the datenvisualisierungs images to the container registry.
+        - docker push $T2_BUILD_IMAGE
+        - docker push $T2_DEPLOY_IMAGE
+
+T3-Build:
+    stage: build
+
+    image: $DOCKER_IMAGE
+
+    services:
+        - $DOCKER_SERVICE
+
+    extends:
+        - .build-variables
+        - .t3-rules
+        - .login-before-script
+
+    script:
+        # Pull the weboberflaeche images and use them as cache.
+        - docker pull $T3_BUILD_IMAGE || true
+        - docker pull $T3_DEPLOY_IMAGE || true
+
+        # Build the weboberflaeche build image.
+        - docker build
+          --cache-from $T3_BUILD_IMAGE
+          --tag $T3_BUILD_IMAGE
+          --file weboberflaeche/Dockerfile.build
+          ./weboberflaeche
+
+        # Build the weboberflaeche deploy image.
+        - docker build
+          --build-arg BUILD_IMAGE=$T3_BUILD_IMAGE
+          --cache-from $T3_DEPLOY_IMAGE
+          --tag $T3_DEPLOY_IMAGE
+          --file weboberflaeche/Dockerfile.deploy
+          ./weboberflaeche
+
+        # Push the weboberflache images to the container registry.
+        - docker push $T3_BUILD_IMAGE
+        - docker push $T3_DEPLOY_IMAGE
+
+T1-Test:
+    stage: test
+
+    image: $T1_BUILD_IMAGE
+
+    services:
+        - $DOCKER_SERVICE
+
+    extends:
+        - .test-variables
+        - .t1-rules
+
+    cache:
+        key: $CI_JOB_NAME
+        paths:
+            - .m2/repository
+
+    needs: ['T1-Build']
+
+    script:
+        - cd /usr/src/datenbereitstellung
+        - mvn test
+
+T2-Test:
+    stage: test
+
+    image: $T2_BUILD_IMAGE
+
+    services:
+        - $DOCKER_SERVICE
+
+    extends:
+        - .test-variables
+        - .t2-rules
+
+    cache:
+        key: $CI_JOB_NAME
+        paths:
+            - .m2/repository
+
+    needs: ['T2-Build']
+
+    script:
+        - cd /usr/src/datenvisualisierung
+        - mvn test
+
+T3-Build-Test:
+    stage: test
+
+    image: $T3_BUILD_IMAGE
+
+    variables:
+        # This job doesnt need the git repository.
+        GIT_STRATEGY: 'none'
+
+    extends:
+        - .t3-rules
+
+    needs: ['T3-Build']
+
+    script:
+        - cd /usr/src/weboberflaeche/webapp
+        - npm run test
+
+T3-Deploy-Test:
+    stage: test
+
+    image: $T3_DEPLOY_IMAGE
+
+    services:
+        - name: krisgeus/docker-kafka:latest
+          alias: kafka
+
+    extends:
+        - .t3-rules
+
+    variables:
+        # This job doesnt need the git repository.
+        GIT_STRATEGY: 'none'
+
+        # Listeners created by the broker.
+        LISTENERS: 'PLAINTEXT://0.0.0.0:9092, INTERNAL://0.0.0.0:9093'
+
+        # Listeners published to the outside.
+        ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:9092, INTERNAL://localhost:9093'
+
+        # The listener that uses the internal connections.
+        INTER_BROKER: 'INTERNAL'
+
+        # Assignment of listeners to security protocols.
+        SECURITY_PROTOCOL_MAP: 'PLAINTEXT:PLAINTEXT, INTERNAL:PLAINTEXT'
+
+        # Create the kafka topics, that we need in the test.
+        KAFKA_CREATE_TOPICS: 'webOrderT3-T4:1:1, pictureToWebT4-T3:1:1'
+
+    needs: ['T3-Build']
+
+    script:
+        - cd /usr/src/weboberflaeche/backend
+        - npm run test:pipeline
+
+Flugwege-Deploy:
+    stage: deploy
+
+    image: $DOCKER_IMAGE
+
+    extends:
+        - .deploy-variables
+        - .deploy-rules
+        - .ssh-before-script
+
+    script:
+        # Copy the docker-compose for flugwege on the server.
+        - scp docker/docker-compose.flugwege.yml $DEPLOY_USER@$DEPLOY_SERVER:$DEPLOY_PATH
+
+        # Stop and remove the old containers and images.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker-compose -f $DEPLOY_PATH/docker-compose.flugwege.yml down --rmi all"
+
+        # Login to the container registry of our repository.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker login -u $CI_DEPLOY_USER -p $CI_DEPLOY_PASSWORD $CI_REGISTRY"
+
+        # Pull all new images from our container registry.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker pull $T1_DEPLOY_IMAGE && docker pull $T2_DEPLOY_IMAGE && docker pull $T3_DEPLOY_IMAGE"
+
+        # Start the new containers.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker-compose -f $DEPLOY_PATH/docker-compose.flugwege.yml up -d"
+
+Database-Deploy:
+    stage: deploy
+
+    image: $DOCKER_IMAGE
+
+    extends:
+        - .deploy-variables
+        - .deploy-rules
+        - .ssh-before-script
+
+    script:
+        # Copy the docker-compose for the database on the server.
+        - scp docker/docker-compose.database.yml $DEPLOY_USER@$DEPLOY_SERVER:$DEPLOY_PATH
+
+        # Stop the old container.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker-compose -f $DEPLOY_PATH/docker-compose.database.yml stop"
+
+        # Start the new container.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker-compose -f $DEPLOY_PATH/docker-compose.database.yml up -d"
+
+Kafka-Deploy:
+    stage: deploy
+
+    image: $DOCKER_IMAGE
+
+    extends:
+        - .deploy-variables
+        - .deploy-rules
+        - .ssh-before-script
+
+    script:
+        # Copy the docker-compose for kafka on the server.
+        - scp docker/docker-compose.kafka.yml $DEPLOY_USER@$DEPLOY_SERVER:$DEPLOY_PATH
+
+        # Copy the config for kafka on the server.
+        - scp -r docker/config $DEPLOY_USER@$DEPLOY_SERVER:$DEPLOY_PATH
+
+        # Stop the old containers.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker-compose -f $DEPLOY_PATH/docker-compose.kafka.yml stop"
+
+        # Start the new containers.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker-compose -f $DEPLOY_PATH/docker-compose.kafka.yml up -d"
+
+        # Wait that kafka is running.
+        - sleep 30
+
+        # Create kafka topics inside the container.
+        - ssh $DEPLOY_USER@$DEPLOY_SERVER "docker exec kafka bash ./usr/src/kafka/kafka-topics.sh" || true
